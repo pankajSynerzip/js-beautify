@@ -59,7 +59,7 @@ from jsbeautifier.__version__ import __version__
 
 class BeautifierOptions:
     def __init__(self):
-        self.indent_size = 4
+        self.indent_size = 2
         self.indent_char = ' '
         self.indent_with_tabs = False
         self.preserve_newlines = True
@@ -74,7 +74,7 @@ class BeautifierOptions:
         self.unescape_strings = False
         self.wrap_line_length = 0
         self.break_chained_methods = False
-
+        self.keep_double_equals = False
 
 
     def __repr__(self):
@@ -102,7 +102,7 @@ unescape_strings = %s
         self.keep_array_indentation,
         self.eval_code,
         self.wrap_line_length,
-        self.unescape_strings,
+        self.unescape_strings
         )
 
 
@@ -162,8 +162,8 @@ def beautify_file(file_name, opts = default_options() ):
         stream = sys.stdin
     else:
         stream = open(file_name)
-
     return beautify(''.join(stream.readlines()), opts);
+    
 
 
 def usage(stream=sys.stdout):
@@ -293,6 +293,8 @@ class Beautifier:
             'TK_SEMICOLON': self.handle_semicolon,
             'TK_STRING': self.handle_string,
             'TK_EQUALS': self.handle_equals,
+            'TK_DOUBLE_EQUALS' : self.handle_double_equals,
+            'TK_NOT_DOUBLE_EQUALS' : self.handle_not_double_equals,
             'TK_OPERATOR': self.handle_operator,
             'TK_COMMA': self.handle_comma,
             'TK_BLOCK_COMMENT': self.handle_block_comment,
@@ -328,7 +330,8 @@ class Beautifier:
 
             # The cleanest handling of inline comments is to treat them as though they aren't there.
             # Just continue formatting and the behavior should be logical.
-            if token_type != 'TK_INLINE_COMMENT' and token_type != 'TK_COMMENT' and token_type != 'TK_UNKNOWN':
+            #if token_type != 'TK_INLINE_COMMENT' and token_type != 'TK_COMMENT' and token_type != 'TK_UNKNOWN':
+            if token_type != 'TK_UNKNOWN':
                 self.last_last_text = self.flags.last_text
                 self.last_type = token_type
                 self.flags.last_text = self.token_text
@@ -568,7 +571,6 @@ class Beautifier:
         return c == find
 
     def get_next_token(self):
-
         self.n_newlines = 0
 
         if self.parser_pos >= len(self.input):
@@ -664,7 +666,6 @@ class Beautifier:
                     self.parser_pos += 1
                     if self.parser_pos >= len(self.input):
                         break
-
                 return comment, 'TK_COMMENT'
 
         if c == "'" or c == '"' or \
@@ -839,9 +840,12 @@ class Beautifier:
 
             if c == ',':
                 return c, 'TK_COMMA'
+            if c == '==':
+                return c,'TK_DOUBLE_EQUALS'
             if c == '=':
                 return c, 'TK_EQUALS'
-
+            if c == '!=':
+                return c, 'TK_NOT_DOUBLE_EQUALS'
             return c, 'TK_OPERATOR'
 
         return c, 'TK_UNKNOWN'
@@ -1213,6 +1217,23 @@ class Beautifier:
         self.append_token(token_text)
         self.output_space_before_token = True
 
+    def handle_double_equals(self,token_text):
+        if self.flags.var_line:
+            # just got an '=' in a var-line, different line breaking rules will apply
+            self.flags.var_line_tainted = True
+
+        self.output_space_before_token = True
+        self.append_token("===")
+        self.output_space_before_token = True
+    
+    def handle_not_double_equals(self,token_text):
+        if self.flags.var_line:
+            # just got an '=' in a var-line, different line breaking rules will apply
+            self.flags.var_line_tainted = True
+
+        self.output_space_before_token = True
+        self.append_token("!==")
+        self.output_space_before_token = True
 
     def handle_comma(self, token_text):
         if self.flags.var_line:
@@ -1326,6 +1347,10 @@ class Beautifier:
 
 
     def handle_block_comment(self, token_text):
+        white_space_len = len(self.whitespace_before_token)
+        #print ('====================')
+        #print (token_text)
+        #print ('====================')
         lines = token_text.replace('\x0d', '').split('\x0a')
         javadoc = False
 
@@ -1341,12 +1366,18 @@ class Beautifier:
             self.append_newline(preserve_statement_flags = True)
             if javadoc:
                 # javadoc: reformat and re-indent
-                self.append_token(' ' + line.strip())
+                #self.append_token(' ' + line.strip())
+                self.break_comment(' '+line.strip(), white_space_len, '*')
             else:
                 # normal comments output raw
-                self.output_lines[-1].text.append(line)
+                #self.output_lines[-1].text.append(line)
+                self.break_comment(line, white_space_len, '*')
+            
 
         self.append_newline(preserve_statement_flags = True)
+
+    def side_kick_bc(self,line):
+        self.append_token(' ' + line.strip())
 
     def handle_inline_comment(self, token_text):
         self.output_space_before_token = True
@@ -1355,6 +1386,11 @@ class Beautifier:
 
 
     def handle_comment(self, token_text):
+        self.break_comment(token_text,len(self.whitespace_before_token))
+    
+    def simple_comment(self,token_text):
+        self.allow_wrap_or_preserved_newline(token_text,False)
+        
         if self.input_wanted_newline:
             self.append_newline(preserve_statement_flags = True)
 
@@ -1364,7 +1400,62 @@ class Beautifier:
         self.output_space_before_token = True
         self.append_token(token_text)
         self.append_newline(preserve_statement_flags = True)
+    
 
+    def break_comment(self,token_text,white_space_length,comment_char = "//"):
+        # break the statement into various words
+        word_array = token_text.split();
+        state_length = white_space_length
+        break_element = None
+        break_index = 0;
+        iterator = 0;
+            
+        for word in word_array:
+            state_length += (len(word) + 1)
+            
+            # Handling Block comments /** */
+            if comment_char != '//':
+                #if state_length in range(self.opts.wrap_line_length-4,self.opts.wrap_line_length+4):
+                if state_length >= self.opts.wrap_line_length:
+                    break_element = word
+                    break_index = iterator - 1;
+                    break;
+            # Handling Non Block comments //
+            else:
+                if state_length >= self.opts.wrap_line_length:
+                    break_element = word
+                    break_index = iterator - 1;
+                    break;
+            iterator += 1
+            
+        if(break_element is not None):
+            left_array  = word_array[:break_index]
+            self.output_space_before_token = False
+            left_token = ' '.join(left_array)
+
+            if comment_char != '//':
+                # Special handling for the block comment
+                self.side_kick_bc(left_token)
+            else:
+                self.simple_comment(left_token)
+                
+            self.append_newline(preserve_statement_flags = True)
+
+            right_array = word_array[break_index:]
+            right_token = None
+            
+            if comment_char != '//':    
+                right_token = " "+ comment_char +" " + ' '.join(right_array)
+            else:
+                right_token = comment_char +" " + ' '.join(right_array)
+                    
+            self.break_comment(right_token,white_space_length)
+        else:
+            if comment_char != '//':
+                self.side_kick_bc(token_text)
+                #self.append_newline(preserve_statement_flags = True)
+            else:
+                self.simple_comment(token_text)
 
     def handle_dot(self, token_text):
         if self.is_special_word(self.flags.last_text):
@@ -1387,13 +1478,13 @@ def mkdir_p(path):
     try:
         os.makedirs(path)
     except OSError as exc: # Python >2.5
-        if exc.errno == errno.EEXIST and os.path.isdir(path):
+        if os.path.isdir(path):
             pass
         else: raise
 
 
 def main():
-
+    
     argv = sys.argv[1:]
 
     try:
@@ -1459,8 +1550,8 @@ def main():
                 print(beautify_file(file, js_options))
             else:
                 mkdir_p(os.path.dirname(outfile))
-                with open(outfile, 'w') as f:
-                    f.write(beautify_file(file, js_options) + '\n')
+                with open(outfile, 'w') as file:
+                    file.write(beautify_file(file, js_options) + '\n')
         except Exception as ex:
             print(ex, file=sys.stderr)
             return 1
