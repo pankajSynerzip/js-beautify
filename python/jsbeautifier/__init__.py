@@ -307,7 +307,6 @@ class Beautifier:
         while True:
             self.token_text, token_type = self.get_next_token()
 
-            #print (token_text, token_type, self.flags.mode)
             if token_type == 'TK_EOF':
                 break
 
@@ -1348,9 +1347,6 @@ class Beautifier:
 
     def handle_block_comment(self, token_text):
         white_space_len = len(self.whitespace_before_token)
-        #print ('====================')
-        #print (token_text)
-        #print ('====================')
         lines = token_text.replace('\x0d', '').split('\x0a')
         javadoc = False
 
@@ -1412,17 +1408,7 @@ class Beautifier:
             
         for word in word_array:
             state_length += (len(word) + 1)
-            
-            # Handling Block comments /** */
-            if comment_char != '//':
-                #if state_length in range(self.opts.wrap_line_length-4,self.opts.wrap_line_length+4):
-                if state_length >= self.opts.wrap_line_length:
-                    break_element = word
-                    break_index = iterator - 1;
-                    break;
-            # Handling Non Block comments //
-            else:
-                if state_length >= self.opts.wrap_line_length:
+            if state_length >= self.opts.wrap_line_length:
                     break_element = word
                     break_index = iterator - 1;
                     break;
